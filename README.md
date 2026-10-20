@@ -1,481 +1,170 @@
-<div align="center">
+# Issue-to-Draft-PR Agent
 
-# Autonomous Software Engineer Platform
-
-**A governed, evidence-driven system for turning GitHub issues into tested draft pull requests.**
-
-[![CI](https://github.com/MadanMohan0537/autonomous-software-engineer-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/MadanMohan0537/autonomous-software-engineer-platform/actions/workflows/ci.yml)
-[![Status](https://img.shields.io/badge/status-v0.2%20six%20modules-2563EB)](#implementation-status)
+[![CI](https://github.com/MadanMohan0537/issue-to-draft-pr-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/MadanMohan0537/issue-to-draft-pr-agent/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-22C55E)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](#proposed-technology)
-[![Human approval](https://img.shields.io/badge/changes-human%20approved-F59E0B)](#governance-and-safety)
 
-</div>
+**A coding agent that turns a GitHub issue into a tested draft pull request. It proposes a reproduction test before editing, checks commands and patches against policy, and stops for a person twice: before implementation, and again before opening the pull request.**
 
-## Choose a bounded first task
+Previously named *autonomous-software-engineer-platform*. The import package and the `ase` CLI keep that name. The installable distribution name in `pyproject.toml` is still `autonomous-software-engineer` (package version 0.2.0). `ase.__version__` is still `0.1.0`.
 
-Begin with repository indexing and inspect the evidence returned for a small question. Then use a narrowly scoped issue in a disposable working copy to evaluate the issue-to-draft-PR workflow.
+The CI badge tracks [`.github/workflows/ci.yml`](.github/workflows/ci.yml) on `main`. That workflow is currently failing. Details are under [Limitations](#limitations).
 
-Review [CLI commands](src/ase/cli.py), [policy configuration](.ase/) and [development commands](Makefile) before enabling execution. Indexing, patch generation, sandbox execution and GitHub publication have different dependencies and permissions.
+## Problem and who it's for
 
-A generated patch remains a proposal. Inspect the diff, verification evidence and approval state before publishing or merging it. Keep task inputs, policy version and execution artifacts with the draft PR so another reviewer can reproduce the decision.
+Coding agents can produce plausible patches. An engineering team still needs harder answers. Did the agent reproduce the problem before editing? Is the patch limited to the requested scope? Did it add meaningful tests or weaken existing ones? Can a reviewer reconstruct the commands and decisions? This repository is aimed at engineering managers and tech leads who are evaluating AI coding tools, and at the AI and IT PMs who own the governance around those tools.
 
+## Approach
 
-
-## Overview
-
-The Autonomous Software Engineer Platform is an open, auditable control plane for repository-level engineering agents. Its intended workflow begins with a GitHub issue and ends with a reviewable draft pull request containing the proposed patch, generated or updated tests, execution evidence, risk notes, and a complete record of the agent's decisions.
-
-The project is designed around one principle:
-
-> A coding agent should earn permission to propose a change by producing reproducible evidence, not by sounding confident.
-
-This is not intended to be an unrestricted code generator or an automatic merge bot. Consequential actions remain behind explicit policy gates and human approval.
-
-## Problem
-
-Coding agents can generate plausible patches, but a useful engineering system must answer harder questions:
-
-- Did the agent understand the repository rather than retrieve a few similar files?
-- Can it reproduce the reported problem before editing code?
-- Is the proposed patch limited to the requested scope?
-- Did the agent add meaningful tests instead of weakening existing ones?
-- Does the patch pass targeted, regression, and mutation testing?
-- Can a reviewer reconstruct every command, assumption, edit, and failure?
-- Can the system learn from review outcomes without silently changing its authority?
-
-This platform treats planning, execution, verification, and review as separate governed stages.
-
-## Run it
-
-Requires Python 3.11 or later and git. Nothing below needs a model key or a GitHub token
-until the step that says so; every command runs offline against this repository.
-
-```bash
-git clone https://github.com/MadanMohan0537/autonomous-software-engineer-platform.git
-cd autonomous-software-engineer-platform
-python -m venv .venv && source .venv/bin/activate
-pip install -e '.[dev,index,graph,sandbox]'   # extras are optional; see pyproject.toml
-make check                                     # ruff, mypy --strict, pytest with coverage
-```
-
-### 1. Repository intelligence
-
-```bash
-ase index . --output artifacts/index.json          # files, symbols, calls, imports
-ase knowledge build .                              # chunks + BM25 + embeddings + code graph, keyed by HEAD
-ase knowledge search . "how are pull request reviews mirrored" -k 5
-ase knowledge eval . --limit 20                    # recall@k against this repo's own history
-```
-
-Set `VOYAGE_API_KEY` to swap the hashing embedder for `voyage-code-3`; the index format
-and the ranking are otherwise identical.
-
-### 2. Issue-to-PR agent
-
-```bash
-export ANTHROPIC_API_KEY=...                       # the agent needs a model
-ase run . --issue 1 --title "harvest fails on a root commit" \
-  --body "ase eval harvest raises CalledProcessError when the repo has a single commit"
-```
-
-Without `--graph` the run is sequential and asks for each gate decision in the terminal.
-With `--graph` (the `graph` extra) the same nodes run under LangGraph with a SQLite
-checkpoint: the run pauses at the plan gate, exits, and any later process can resume it:
-
-```bash
-ase run . --graph --issue 1 --title "..."          # → "paused at the plan gate; resume with: ase resume ..."
-ase resume . <run_id> --approve                    # plan gate → implement → verify → reflect → pauses at PR gate
-ase resume . <run_id> --approve                    # PR gate → draft pull request (needs GITHUB_TOKEN and --remote)
-```
-
-`--auto-approve` is for evaluation runs only. The API exposes the same gates
-(`POST /api/runs/{id}/plan-review`, `/pr-review`) and the full trace
-(`GET /api/runs/{id}/trace`):
-
-```bash
-ASE_REPOSITORY_ROOT=$PWD uvicorn ase.api:app --reload   # console at http://127.0.0.1:8000, API docs at /docs
-```
-
-### 3. Test generation and mutation testing
-
-```bash
-ase mutate . --paths src/ase/policy.py --tests tests/test_policy.py --budget 300
-ase gen-tests . --paths src/ase/policy.py          # needs ANTHROPIC_API_KEY; keeps a test only if it kills a mutant
-```
-
-### 4. CI/CD agent
-
-```bash
-ase ci check <run_id>                              # needs GITHUB_TOKEN: triage the run's PR builds
-printf '[{"requests":100,"errors":1,"p95_ms":120},{"requests":100,"errors":0,"p95_ms":110}]' > windows.json
-ase canary simulate windows.json                   # decision engine only; deploy authority is denied by policy
-```
-
-### 5. Evaluation harness
-
-```bash
-ase eval harvest . --limit 10 --output evals/suites/local.json   # tasks from this repo's own history
-ase eval run . --suite evals/suites/local.json --config structured
-ase eval run . --suite evals/suites/local.json --config command_only --tool-mode command_only
-ase eval report --results-dir evals/results --cases              # resolve rate, cost, tokens per config
-```
-
-### 6. Human feedback loop
-
-```bash
-ase reviews sync                                   # needs GITHUB_TOKEN: mirror PR reviews into the trace store
-ase feedback dataset --output feedback/labels.jsonl
-ase feedback agreement --dataset feedback/labels.jsonl                 # heuristic scorer vs human labels
-ase feedback train --dataset feedback/labels.jsonl --output feedback/logistic.json
-ase feedback agreement --dataset feedback/labels.jsonl --model feedback/logistic.json
-```
-
-The LoRA rung (`ase.feedback.lora`) validates a dataset and writes a training manifest;
-it refuses fewer than 200 reviewed labels and does not train inside this package.
-
-### Sandbox and policy
-
-Every command the agent runs is an argv array checked against `.ase/policy.yaml` and run
-in a sandbox. The default `local` backend is for development; build the container image
-for isolation:
-
-```bash
-make sandbox-image                                 # docker/sandbox.Dockerfile → ase-sandbox:latest
-ASE_EXECUTION_BACKEND=docker ase run . --issue ...
-```
-
-`.env.example` lists every setting.
-
-## Intended workflow
+Planning, execution, verification, and review are separate stages. The issue-to-PR path in `src/ase/agent/graph.py` is:
 
 ```mermaid
 flowchart TD
     A["GitHub issue"] --> B["Repository intelligence"]
-    B --> C["Reproduce failure"]
-    C --> D["Plan and risk analysis"]
-    D --> E{"Human approval"}
-    E -->|Approved| F["Sandboxed implementation"]
-    E -->|Rejected| G["Record feedback"]
-    F --> H["Tests and mutation analysis"]
-    H --> I["Patch evaluation"]
-    I --> J{"Quality gate"}
-    J -->|Pass| K["Draft pull request"]
-    J -->|Fail| L["Revise or escalate"]
+    B --> C["Plan, including a proposed reproduction test"]
+    C --> D{"Human approval: plan"}
+    D -->|Rejected| E["Record the rejection and stop"]
+    D -->|Approved| F["Create a workspace and install the reproduction test"]
+    F --> G["Sandboxed implementation"]
+    G --> H["Pytest, patch scope, and test integrity"]
+    H --> I{"Reflect"}
+    I -->|Retry| G
+    I -->|Give up| J["Stop"]
+    I -->|Submit| K{"Human approval: pull request"}
+    K -->|Rejected| E
+    K -->|Approved| L["Draft pull request"]
 ```
 
-Each run will preserve a stable lineage:
+The two human gates are `await_plan_approval` and `await_pr_approval`. Both default to required. `.ase/policy.yaml` sets `open_draft_pull_request: human_approval`, which keeps the pull-request gate on, and it does not turn the plan gate off.
 
-```text
-repositoryId
-→ issueId
-→ agentRunId
-→ planId
-→ workspaceId
-→ patchId
-→ evaluationId
-→ pullRequestId
-→ reviewDecisionId
-```
+With `ase run --graph` (the `graph` extra), LangGraph interrupts at each gate and stores a SQLite checkpoint, so another process can resume the run. Without `--graph`, the same nodes run in sequence and ask for each decision in the terminal. `--auto-approve` records both approvals without asking. That flag is for evaluation runs.
 
-## Platform modules
+A rejection is written to the trace store and the run stops. It does not automatically revise the patch or write a feedback-ledger row. Revision happens earlier: if verification fails, the reflect step can send the run back to implementation before the pull-request gate.
 
-### 1. Repository Intelligence
+The reproduction test is part of the plan. It is written only after the plan is approved, and only kept when it fails on the base commit. Editing starts after that. If no failing test is known, the run records that the whole suite is the acceptance check.
 
-Builds an incrementally updated representation of the codebase using:
+Other boundaries in code and `.ase/policy.yaml`:
 
-- Concrete syntax trees and language-aware symbol extraction
-- Imports, calls, inheritance, configuration, and test relationships
-- Lexical and semantic indexes
-- Git history, ownership, and change-coupling signals
-- Test-to-source mappings
-- Explainable context bundles for every agent decision
+- There is no merge implementation. `CanaryController.deploy` checks `deploy_production` and raises `AuthorityDenied` under the default policy. If that check were ever allowed, the method still raises `NotImplementedError`.
+- Agent commands are argv arrays. The policy engine allowlists executables and rejects shell interpreters. `git merge` and `git push` are denied subcommands.
+- The Docker sandbox starts containers with `--network none` unless `execution.network` is `allowed`. The default `local` backend does not enforce a network boundary.
+- Verification rejects a patch that adds `pytest` skip or focus markers, edits test files when the task is not about tests, or changes or removes the installed reproduction test. Missing policy keys keep the defaults, which deny merge, deploy, and sandbox network, and require both approvals. An unknown authority action is denied.
 
-Retrieval will combine semantic relevance, lexical matching, graph distance, and repository history rather than relying on embeddings alone.
+Mutation testing is a separate command. It is not a stage between implementation and the pull-request gate.
 
-### 2. Issue-to-PR Orchestrator
+## What exists today
 
-Runs a durable, resumable state machine:
+Checked against the code in this repository, package version 0.2.0. The offline commands in [Quick start](#quick-start) were run while writing this file.
 
-```text
-INGEST_ISSUE
-→ REPRODUCE_FAILURE
-→ RETRIEVE_CONTEXT
-→ PROPOSE_PLAN
-→ AWAIT_PLAN_APPROVAL
-→ CREATE_WORKSPACE
-→ IMPLEMENT_PATCH
-→ GENERATE_TESTS
-→ VERIFY_PATCH
-→ AWAIT_PR_APPROVAL
-→ OPEN_DRAFT_PR
-→ CAPTURE_REVIEW
-```
-
-A failed or interrupted task should resume from a recorded checkpoint. Every transition will emit a structured event.
-
-### 3. Sandboxed Execution Plane
-
-Executes agent-proposed commands inside disposable environments with:
-
-- Ephemeral containers and isolated Git worktrees
-- Read-only repository bases
-- Explicit writable paths
-- CPU, memory, process, and time limits
-- Network access disabled by default
-- Secret redaction
-- Command and dependency policies
-- Captured stdout, stderr, exit codes, and artifacts
-
-The agent will not receive host-level Docker access or direct authority over protected branches.
-
-### 4. Verification Engine
-
-Evaluates more than whether the visible test suite passes:
-
-- Formatting, linting, type checking, and static analysis
-- Failure reproduction before implementation
-- Targeted tests for changed behavior
-- Full regression suites
-- Mutation testing for test strength
-- Patch-scope and API-compatibility checks
-- Detection of deleted, skipped, or weakened tests
-- Dependency and security-policy checks
-
-### 5. Evaluation Harness
-
-Measures both final patches and the trajectories that produced them.
-
-Planned evaluation layers:
-
-1. Deterministic tasks derived from controlled repositories
-2. Repository-level benchmark adapters, including SWE-bench
-3. Hidden regression tests
-4. Repeated runs for stability measurement
-5. Human-reviewed shadow tasks
-6. Adversarial tasks targeting scope, security, and test integrity
-
-The platform is intended to integrate with [Sentinel Eval Harness](https://github.com/MadanMohan0537/sentinel-eval-harness) rather than duplicating its evaluation ledger and release-gating foundation.
-
-### 6. Human Feedback Ledger
-
-Stores structured review outcomes such as:
-
-- Plan approved, rejected, or revised
-- Files accepted or rejected
-- Unnecessary refactoring
-- Missed edge cases
-- Incorrect assumptions
-- Test-quality problems
-- Security and policy violations
-- Reviewer correction distance
-
-Early feedback will improve retrieval, policies, prompts, and failure analysis. The project will not claim reward-model training until a sufficiently large and reviewed dataset exists.
-
-### 7. GitHub Integration
-
-The GitHub integration is expected to support:
-
-- Issue and label triggers
-- Repository installation and permission boundaries
-- Draft branches and draft pull requests
-- Check runs and evaluation summaries
-- Reviewer feedback ingestion
-- Idempotent webhook processing
-- Protected-branch enforcement
-
-The first versions will create draft pull requests only. They will not merge or deploy changes autonomously.
-
-## Proposed system architecture
-
-```mermaid
-flowchart TD
-    A["GitHub App"] --> B["Task API"]
-    B --> C["Durable orchestrator"]
-    C --> D["Repository intelligence"]
-    C --> E["Sandbox manager"]
-    E --> F["Patch and test runner"]
-    F --> G["Evaluation service"]
-    G --> H["Policy engine"]
-    H --> I["Review console"]
-    I --> A
-    D --> J[("Postgres + pgvector")]
-    C --> K[("Event ledger")]
-```
-
-## Proposed technology
-
-| Concern | Initial choice | Reason |
-|---|---|---|
-| Orchestration | LangGraph with typed state | Durable, interruptible agent workflows |
-| API services | Python and FastAPI | Strong ecosystem for analysis and evaluation |
-| Code parsing | Tree-sitter | Incremental, language-aware syntax trees |
-| Graph analysis | NetworkX initially | Transparent graph algorithms and rapid iteration |
-| Persistence | PostgreSQL | Durable task, event, and review records |
-| Vector search | pgvector | Semantic retrieval without a separate database |
-| Queue | Redis Streams initially | Recoverable background execution |
-| Isolation | Docker, with stronger runners later | Reproducible disposable workspaces |
-| UI | Next.js | Plan, diff, evidence, and approval console |
-| Observability | OpenTelemetry | Portable traces, metrics, and logs |
-| CI | GitHub Actions | Pull-request verification and artifacts |
-
-All infrastructure choices remain replaceable through typed interfaces. The agent runtime, model provider, vector store, and execution backend should not be hard-coded together.
-
-## Evaluation metrics
-
-| Dimension | Metric |
+| Module | Implemented |
 |---|---|
-| Correctness | Issue resolution rate and hidden-test pass rate |
-| Safety | Unsafe command interception and policy violation rate |
-| Testing | Mutation score change and regression detection rate |
-| Scope | Unnecessary-file change rate and patch precision |
-| Reliability | Reproducibility across repeated runs |
-| Reviewability | Evidence completeness and reviewer correction distance |
-| Human value | Plan approval and pull-request acceptance rates |
-| Efficiency | Time, tokens, and cost per accepted patch |
+| 1. Repository intelligence | Python parsing with tree-sitter and a standard-library `ast` fallback. Python files are chunked by definition. TypeScript, JavaScript, Go, Rust, and Java get regex line-level symbols and window chunks, with no call graph. Search uses BM25, hashing or Voyage embeddings, and reciprocal-rank fusion. A NetworkX code graph builds a personalized-PageRank repo map. `ase knowledge eval` measures recall@k against git history. |
+| 2. Issue-to-PR agent | A reproduction test installed after plan approval and before edits, constrained edit and argv command tools, pytest plus patch-scope and test-integrity checks, the two human gates above, resumable LangGraph runs with a SQLite checkpoint, and draft pull requests through the GitHub Git Data API when `GITHUB_TOKEN` is set. Without a token, delivery writes the patch locally. |
+| 3. Testing | `ase mutate` runs mutation testing on chosen files. `ase gen-tests` calls the model and keeps a generated test only when it kills a mutant. |
+| 4. CI/CD | Actions triage for the agent's draft pull requests (rules first, model second, unknown failures escalated). `ase canary simulate` is a decision engine over SLO windows. It does not deploy. |
+| 5. Evaluation | Tasks harvested from git history, grading by applying the patch to a clean checkout, report tables, and a SWE-bench adapter that writes a predictions file for the official harness. `evals/results/` contains no committed results. |
+| 6. Human feedback | Pull-request review sync into the trace store, a labeled dataset, a heuristic scorer, and a logistic scorer. Logistic training refuses fewer than 30 examples, or a dataset whose labels are all the same. The LoRA helper refuses fewer than 200 reviewed labels, and also refuses a one-sided label split. Its `train` function raises `NotImplementedError`. |
 
-A passing public test suite alone will never count as sufficient evidence.
+Also in the tree: a FastAPI app (`src/ase/api.py`) that serves a console at `/` and API docs at `/docs`, with `POST /api/runs/{id}/plan-review`, `POST /api/runs/{id}/pr-review`, and `GET /api/runs/{id}/trace`. Those routes use the orchestrator in `src/ase/orchestrator.py`, which stops at the approval states. They do not start the LangGraph agent. Docker Compose, `docker/sandbox.Dockerfile`, and the Kubernetes manifests in `deploy/k8s/` are present. The manifests still reference `ghcr.io/madanmohan0537/autonomous-software-engineer-platform:latest`. Model calls from the agent use the Anthropic Messages API. Offline tests use a scripted client. Persistence in this tree is SQLite.
 
-## Governance and safety
+Not in this tree: a merge implementation, a deployment backend, a trained LoRA reward model, a SWE-bench score, call graphs for languages other than Python, PostgreSQL, pgvector, Redis, or microVM backends, a GitHub App install flow (a personal or fine-grained token is used), live-model tests in CI, and a Cloudflare Worker. See [Deployment](#deployment).
 
-Initial non-negotiable boundaries:
+## How success would be measured
 
-- No autonomous merges
-- No direct writes to protected branches
-- No production deployment authority
-- No network access inside sandboxes unless a policy explicitly grants it
-- No secret values in prompts, logs, patches, or artifacts
-- No dependency installation without policy evaluation
-- No acceptance of a patch that deletes or weakens required tests
-- Human approval before implementation and before pull-request creation
-- Complete command and artifact provenance
-- Fail-closed behavior when repository policy or execution evidence is missing
+No measured results are committed in this repository. `evals/results/` is empty apart from a placeholder.
 
-Repository-local policy is configured through the versioned file `.ase/policy.yaml`; missing or unknown values fail closed to the typed defaults.
+| Dimension | Metric | Status |
+|---|---|---|
+| Correctness | Issue resolution rate on hidden tests | Not yet measured |
+| Testing | Mutation-score change from generated tests | Tooling exists (`ase mutate`, `ase gen-tests`). Not yet measured |
+| Scope | Unnecessary-file change rate | Not yet measured |
+| Human value | Plan approval and pull-request acceptance rates | Not yet measured |
+| Efficiency | Time, tokens, and cost per accepted patch | Each run can store token counts, cost, and step duration. Not yet measured |
+| Retrieval | recall@k against the repository's own history | `ase knowledge eval` runs offline. Not yet measured |
 
-## Repository structure
+A green pytest report is one check. The pull-request gate also requires the patch-scope and test-integrity checks, and a person still has to approve the draft.
+
+## Limitations
+
+- Only Python gets definition spans, imports, and a call graph. Other supported languages get line-level regex symbols.
+- The agent needs `ANTHROPIC_API_KEY` for live model calls. Opening a GitHub draft pull request, CI triage, and review sync need `GITHUB_TOKEN`. CI exercises the model with scripted completions.
+- The default `local` sandbox is for development. It checks argv and paths and does not isolate the network. Use `ASE_EXECUTION_BACKEND=docker` with the sandbox image for the container boundary.
+- NetworkX 3.7's `pagerank` imports SciPy. SciPy is not in the install extras. With the extras in the quick start, `python -m pytest` collected 135 tests and failed 11, all with `ModuleNotFoundError: No module named 'scipy'`, in the agent-flow, CLI, eval-runner, graph, and knowledge tests. The `pytest` console script that `make check` uses does not get that far today: `make check` stops at mypy. Invoking that console script directly also stops during collection of `tests/test_cli.py`, `tests/test_evals.py`, `tests/test_graph.py`, and `tests/test_knowledge.py`, which import the `tests` package. `tests/` has no `__init__.py`.
+- No benchmark results are committed.
+- `ase.__version__` does not match the package version.
+
+### Known CI failure
+
+This is not fixed in the README change. The `CI` workflow on `main` failed on 2026-09-16 and 2026-10-04. The last successful run was on 2026-09-15. On the failing runs, `ruff check` and `ruff format --check` passed, then `mypy src` failed, so the pytest and CLI smoke steps did not run.
+
+The runner uses Python 3.12 and `pip install -e '.[dev,index,graph,sandbox]'`. The 2026-10-04 log installed numpy 2.5.3 and reported:
 
 ```text
-.
-├── src/ase/                # the platform: contracts, policy, sandbox, store, and the six modules
-│   ├── repo_intelligence/  # 1. parsers, chunks, BM25, embeddings, code graph, retrieval
-│   ├── agent/              # 2. nodes, tools, prompts, sequential runner, LangGraph graph, delivery
-│   ├── testing/            # 3. coverage, mutation testing, validated test generation
-│   ├── ci/                 # 4. Actions triage, PR watcher, canary decision engine
-│   ├── evals/              # 5. suites, harvesting, clean-checkout grading, reports, SWE-bench adapter
-│   ├── feedback/           # 6. review sync, features, scorers, dataset, LoRA gate, reviewer ledger
-│   └── llm/                # Messages API client, scripted client, pricing
-├── tests/                  # offline test suite (scripted model, local sandbox, temp git repos)
-├── evals/suites/           # committed evaluation suites (+ README on the format)
-├── docker/                 # sandbox image
-├── deploy/k8s/             # hardened manifests for the API and worker
-├── docs/                   # DESIGN, ADRs, ARCHITECTURE, PRD, THREAT_MODEL, EVALUATION, OPERATIONS, IDE
-├── .ase/policy.yaml        # this repository's own execution policy
-└── .github/workflows/      # lint, types, tests with coverage gate, CLI smoke test, container build
+numpy/__init__.pyi:737: error: Type statement is only supported in Python 3.12 and greater  [syntax]
 ```
 
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the file-by-file layout;
-[docs/DESIGN.md](docs/DESIGN.md) explains each module, [docs/adr/](docs/adr/README.md)
-records the decisions behind them, and [docs/BACKLOG.md](docs/BACKLOG.md) is the next
-weekend's work with acceptance criteria.
+`[tool.mypy] python_version = "3.11"` is applied to those numpy 2.5 stubs, which use the Python 3.12 `type` statement. The same `mypy src` error reproduced locally on Python 3.12.3 with numpy 2.5.4. `make check` exits at that step.
 
-## Delivery roadmap
+## Quick start
 
-### Phase 1: Repository intelligence
+Requires Python 3.11+ and git. The first block needs no model key and no GitHub token. These commands completed against this tree: install, `ase index`, `ase knowledge build`, `ase knowledge search`, `ase canary simulate`, and `ase knowledge eval`.
 
-- Define repository, symbol, relationship, and context contracts
-- Parse an initial set of Python and TypeScript repositories
-- Build import, call, definition, and test graphs
-- Implement incremental refresh
-- Produce explainable context bundles
+```bash
+git clone https://github.com/MadanMohan0537/issue-to-draft-pr-agent.git
+cd issue-to-draft-pr-agent
+python -m venv .venv && source .venv/bin/activate
+pip install -e '.[dev,index,graph,sandbox]'
 
-### Phase 2: Reproducible task execution
+ase index . --output artifacts/index.json
+ase knowledge build .
+ase knowledge search . "how are pull request reviews mirrored" -k 5
+printf '[{"requests":100,"errors":1,"p95_ms":120},{"requests":100,"errors":0,"p95_ms":110}]' > windows.json
+ase canary simulate windows.json
+```
 
-- Ingest a GitHub issue
-- Create an isolated worktree
-- Reproduce the reported failure
-- Record commands and artifacts
-- Generate a bounded implementation plan
+`ase knowledge eval . --limit 20` prints recall@k for this clone. That number is not a committed result.
 
-### Phase 3: Governed patching
+`make check` runs Ruff, `mypy src`, and pytest with an 85% coverage gate. It currently stops at `mypy src`. See [Known CI failure](#known-ci-failure).
 
-- Add approval checkpoints
-- Apply model-generated edits through constrained tools
-- Enforce file and command policies
-- Preserve patch provenance
+Run the agent on an issue (needs a model key). `--graph` pauses at the plan gate, then again at the pull-request gate:
 
-### Phase 4: Verification
+```bash
+export ANTHROPIC_API_KEY=...
+ase run . --graph --issue 1 --title "harvest fails on a root commit" \
+  --body "ase eval harvest raises CalledProcessError when the repo has a single commit"
+ase resume . <run_id> --approve      # plan gate: workspace, reproduction, implement, verify
+ase resume . <run_id> --approve      # pull-request gate
+```
 
-- Run targeted and regression tests
-- Generate candidate tests
-- Add mutation and test-integrity analysis
-- Introduce deterministic patch-quality gates
+A real GitHub draft pull request needs `GITHUB_TOKEN` and `--remote owner/name` on the original `ase run`. `ase resume` only records the decision. Without a token, delivery writes the patch under the data directory and the run can still finish as submitted.
 
-### Phase 5: Draft pull requests
+API and console:
 
-- Implement the GitHub App
-- Publish check runs and evidence summaries
-- Open draft pull requests after approval
-- Capture structured reviewer feedback
+```bash
+ASE_REPOSITORY_ROOT=$PWD uvicorn ase.api:app --reload
+```
 
-### Phase 6: Benchmarking and learning
+The console is at http://127.0.0.1:8000 and the API docs are at `/docs`. `.env.example` lists the settings the process reads.
 
-- Connect Sentinel
-- Add controlled repository tasks
-- Add SWE-bench-compatible execution
-- Publish reproducible evaluation reports
-- Use review history for retrieval and policy improvement
+Design notes: [docs/DESIGN.md](docs/DESIGN.md), [ADRs](docs/adr/README.md), [threat model](docs/THREAT_MODEL.md), [evaluation plan](docs/EVALUATION.md).
 
-## Implementation status
+## Deployment
 
-The repository provides a tested **version 0.2** of all six modules, wired through one
-trace store, with the human gates and policy boundaries above enforced in code. The test
-suite runs offline (scripted model client, local sandbox, temporary git repositories);
-CI runs it with every optional extra installed and adds a CLI smoke test.
+Cloudflare Workers is the planned deployment target. This repository has no `wrangler.toml`, no Worker entry point, and no Workers bindings. It is not deployed to Cloudflare Workers, and there is no Worker name or `workers.dev` hostname to preserve.
 
-Implemented and verified:
+What would have to land before a deploy:
 
-- Typed contracts for issues, tasks, runs, steps, patches, test reports, reviews and evaluation results, persisted in one SQLite trace store with JSONL export
-- Repository intelligence: tree-sitter parsing for Python with a standard-library fallback, definition-level chunks, hand-written BM25, hashing or Voyage embeddings, a networkx code graph with a personalised-PageRank repo map, RRF fusion, explainable file-level context, and a recall@k evaluation against git history
-- Issue-to-PR agent: reproduction test installed before editing, constrained tools (search/replace edits, argv-only commands), verify with test-integrity and patch-scope checks, reflect with budgets, two human gates, resumable LangGraph execution with SQLite checkpoints, draft pull requests through the Git Data API
-- Anthropic Messages API client with tool use, prompt caching and cost accounting; a scripted client for offline tests
-- Mutation testing with a built-in AST mutator, coverage collection, and test generation that keeps a test only when it kills a mutant
-- CI triage (rules first, model second), a pull-request watcher that labels, re-runs, re-enters or escalates, and a canary decision engine that fails closed against deploy authority
-- Evaluation suites harvested from git history with measured fail-to-pass tests, clean-checkout grading, per-configuration reports, and a SWE-bench predictions adapter
-- Review mirroring, trajectory features, heuristic and logistic scorers, agreement measurement, and a gated LoRA recipe
-- Policy engine (`.ase/policy.yaml`, fail closed), local and Docker sandboxes, per-run worktrees
-- FastAPI control plane with the governed IDE workspace, feedback ledger, authenticated webhooks, queue worker, and both gates
-- Docker Compose, sandbox image, hardened Kubernetes manifests, CI with strict typing and an 85% coverage gate
+- a `wrangler.toml`
+- a Worker entry point
+- for this Python codebase, either Python Workers or a JavaScript/TypeScript port of the piece that should run on Workers
 
-Not implemented, on purpose or not yet:
+After that configuration exists, deploy with:
 
-- No autonomous merge or deploy: the policy denies both and the code paths do not exist
-- No trained reward model: the LoRA rung stops at dataset validation until 200 reviewed labels exist
-- No SWE-bench score: the platform writes predictions; the official harness grades
-- Non-Python languages have line-level symbols only (no call graph, window chunking)
-- No PostgreSQL/pgvector, Redis, or microVM backends; the Protocols are the seams for them
-- No GitHub App installation flow; a personal or fine-grained token is used
-- No live model-in-the-loop tests in CI; model behaviour is exercised with scripted completions
+```bash
+npx wrangler deploy
+```
 
-This section is updated only when a capability is implemented and verified.
-
-## Product principles
-
-- Reproduce before editing.
-- Retrieve evidence, not just similar text.
-- Separate model proposals from execution authority.
-- Prefer deterministic gates for consequential decisions.
-- Preserve failures rather than hiding them in aggregate scores.
-- Require human review at meaningful boundaries.
-- Make every claim traceable to code, tests, or recorded evidence.
-- Never describe a planned capability as implemented.
-
-## Contributing
-
-The project is at an early design stage. Architecture discussions, threat-model reviews, reproducible benchmark tasks, and tightly scoped implementation contributions are welcome.
-
-Before submitting a change, ensure it preserves the project's human-approval and evidence-lineage principles.
+`docker-compose.yml`, `docker/sandbox.Dockerfile`, and `deploy/k8s/` are in the repository. They are local and Kubernetes manifests, separate from the Workers target. The canary command above only simulates a promote or roll-back decision.
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE).
+[Apache License 2.0](LICENSE)
